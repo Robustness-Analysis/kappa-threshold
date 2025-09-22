@@ -1,0 +1,6 @@
+# R related files
+.RData
+.Rhistory
+
+# macOS files
+.DS_Store
