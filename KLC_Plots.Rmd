@@ -1,0 +1,299 @@
+---
+title: "Kappa Loss Curves for all datasets and methods"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Kappa results from altered datasets
+
+## Preliminary steps
+
+Load libraries
+
+```{r, include=FALSE}
+# Packages that need to be loaded
+library(dplyr)
+library(ggplot2)
+```
+
+Load files
+
+```{r, include=FALSE}
+# Load files
+datasets <- readRDS("../files/datasets.rds")
+method_names = readRDS("../files/method_names.rds")
+noise_level <- readRDS("../files/noise.rds")
+noise_names <- readRDS("../files/noise_names.rds")
+instances_names = readRDS("../files/instances_names.rds")
+quartiles_names = c("0", "25", "50", "75", "100")
+
+# Load results
+mia_df <- readRDS("../results/most_important_attr/mia_df.rds")
+noiseMIA_list <- readRDS("../results/noise/noise_list.rds")
+instancesCM_list = readRDS("../results/instances/instancesCM_list.rds")
+confusion_list <- readRDS("../results/conf_matrices/confusion_matrices.rds")
+```
+
+## Information about the datasets
+
+### Auxiliary functions
+
+Function to get the number of instances from a dataset
+
+```{r, include=FALSE}
+# Function to get the number of instances from a dataset
+get_num_instances <- function(dataset) {
+  num_instances <- nrow(dataset)
+  return(num_instances)
+}
+```
+
+Function to determine the type of each attribute
+
+```{r, include=FALSE}
+# Function to determine the type of each attribute
+get_attribute_type <- function(dataset) {
+  # Exclude the "class" column
+  dataset_subset <- dataset[, !names(dataset) %in% "class"]
+  
+  # Initialize counts
+  numerical_count <- 0
+  nominal_count <- 0
+  
+  # Loop through columns
+  for (col in names(dataset_subset)) {
+    if (is.numeric(dataset_subset[[col]])) {
+      numerical_count <- numerical_count + 1
+    } else {
+      nominal_count <- nominal_count + 1
+    }
+  }
+  
+  # Return counts
+  return(list(Numerical = numerical_count, Nominal = nominal_count))
+}
+```
+
+Function to determine if dataset is binary or multiclass
+
+```{r, include=FALSE}
+# Function to determine if dataset is binary or multiclass
+is_binary <- function(dataset) {
+  unique_classes <- unique(dataset$class)
+  num_unique_classes <- length(unique_classes)
+  
+  if (num_unique_classes == 2) {
+    return("Binary")
+  } else if (num_unique_classes > 2) {
+    return("Multiclass")
+  } else {
+    stop("Invalid number of unique classes")
+  }
+}
+```
+
+Create a table that shows all datasets and a summary of their data
+
+```{r echo=FALSE}
+# Create a dataframe to store the summary
+summary_df <- data.frame(
+  Dataset = character(0),
+  Num_Instances = numeric(0),
+  Numerical_Attributes = numeric(0),
+  Nominal_Attributes = numeric(0),
+  Dataset_Type = character(0),
+  stringsAsFactors = FALSE
+)
+
+# Iterate through datasets
+for (dataset_name in datasets) {
+  # Load dataset
+  filename = paste0("../datasets/", dataset_name, ".rds")
+  dataset <- readRDS(filename)
+  # Calculate summary metrics
+  num_instances <- get_num_instances(dataset)
+  attribute_types <- get_attribute_type(dataset)
+  dataset_type <- is_binary(dataset)
+  # Add to summary dataframe
+  summary_df <- bind_rows(summary_df, data.frame(
+    Dataset = dataset_name,
+    Num_Instances = num_instances,
+    Numerical_Attributes = attribute_types$Numerical,
+    Nominal_Attributes = attribute_types$Nominal,
+    Dataset_Type = dataset_type
+  ))
+}
+
+# Convert all data to numeric
+summary_df$Num_Instances <- as.numeric(summary_df$Num_Instances)
+summary_df$Numerical_Attributes <- as.numeric(summary_df$Numerical_Attributes)
+summary_df$Nominal_Attributes <- as.numeric(summary_df$Nominal_Attributes)
+
+# Combine attribute columns
+#summary_df$Attributes <- summary_df$Numerical_Attributes + summary_df$Nominal_Attributes
+
+# Print the summary dataframe
+print(summary_df)
+```
+
+## Plotting the result
+
+### Turn confusion matrix list into dataframe
+
+Turn confusion list into a dataframe for easier manipulation
+
+```{r include=FALSE}
+# Turn list into dataframe
+deciles_df = data.frame(matrix(ncol = 6, nrow = 0))
+colnames(deciles_df) = c("dataset_name", "technique", "noise", "percentage", "accuracy", "kappa")
+
+for(dataset in datasets) {
+  for(method in method_names) {
+    for(noise in noise_names) {
+      for(instance in instances_names){
+        # Get the values for accuracy and kappa 
+        a <- confusion_list[[dataset]][[1]][[method]][[noise]][[instance]]$accuracy
+        
+        k <- confusion_list[[dataset]][[1]][[method]][[noise]][[instance]]$kappa
+        
+        # Add row to results dataframe
+        deciles_df[nrow(deciles_df) + 1,] = c(dataset, method, noise, instance, a, k)
+      }
+    }
+  }
+}
+```
+
+```{r include=FALSE}
+# Turn list into dataframe
+quartiles_df = data.frame(matrix(ncol = 6, nrow = 0))
+colnames(quartiles_df) = c("dataset_name", "technique", "noise", "percentage", "accuracy", "kappa")
+
+for(dataset in datasets) {
+  for(method in method_names) {
+    for(noise in noise_names) {
+      for(instance in quartiles_names){
+        # Get the values for accuracy and kappa 
+        a <- confusion_list[[dataset]][[1]][[method]][[noise]][[instance]]$accuracy
+        k <- confusion_list[[dataset]][[1]][[method]][[noise]][[instance]]$kappa
+        
+        # Add row to results dataframe
+        quartiles_df[nrow(quartiles_df) + 1,] = c(dataset, method, noise, instance, a, k)
+      }
+    }
+  }
+}
+```
+
+### Transform values for accuracy, kappa, noise and instances
+
+#### Make sure accuracy and kappa are numbers
+
+```{r, include=FALSE}
+deciles_df$accuracy <- as.numeric(deciles_df$accuracy)
+deciles_df$kappa <- as.numeric(deciles_df$kappa)
+quartiles_df$accuracy <- as.numeric(quartiles_df$accuracy)
+quartiles_df$kappa <- as.numeric(quartiles_df$kappa)
+```
+
+```{r, include=FALSE}
+# Round the values of accuracy and kappa to two decimals
+deciles_df$accuracy <- round(deciles_df$accuracy, digits = 2)
+deciles_df$kappa <- round(deciles_df$kappa, digits = 2)
+quartiles_df$accuracy <- round(quartiles_df$accuracy, digits = 2)
+quartiles_df$kappa <- round(quartiles_df$kappa, digits = 2)
+```
+
+#### Turn noise and instances into numbers
+
+```{r, include=FALSE}
+deciles_df$percentage <- as.numeric(deciles_df$percentage)
+deciles_df <- deciles_df %>% mutate(noise = recode(noise, "noise_0" = "0", "noise_5" = "5", "noise_10" = "10", "noise_20" = "20", "noise_30" = "30", "noise_40" = "40", "noise_50" = "50", "noise_60" = "60", "noise_70" = "70", "noise_80" = "80", "noise_90" = "90", "noise_100" = "100"))
+deciles_df$noise <- as.numeric(deciles_df$noise)
+```
+
+```{r include=FALSE}
+quartiles_df$percentage <- as.numeric(quartiles_df$percentage)
+quartiles_df <- quartiles_df %>% mutate(noise = recode(noise, "noise_0" = "0", "noise_5" = "5", "noise_10" = "10", "noise_20" = "20", "noise_30" = "30", "noise_40" = "40", "noise_50" = "50", "noise_60" = "60", "noise_70" = "70", "noise_80" = "80", "noise_90" = "90", "noise_100" = "100"))
+quartiles_df$noise <- as.numeric(quartiles_df$noise)
+```
+
+#### Store the resulting dataframes
+
+```{r, include=FALSE}
+saveRDS(deciles_df, file = "../results/results_deciles.rds")
+saveRDS(quartiles_df, file = "../results/results_quartiles.rds")
+```
+
+## Plotting the Kappa Loss Curves for each dataset and technique in a grid
+
+#### Obtain the Kappa Loss (in deciles)
+
+```{r include=FALSE}
+# Get Kappa loss in order to print Kappa Loss Curves
+# Calculate 1 - mean_kappa rounded to two decimals
+deciles_df$kappa_loss <- round(1 - deciles_df$kappa, 3)
+```
+
+```{r echo=FALSE}
+# Create a new column to control the order of datasets
+deciles_df$dataset_order <- factor(deciles_df$dataset_name, levels = datasets)
+
+# Create a new column to control the order of methods
+deciles_df$method_order <- factor(deciles_df$technique, levels = method_names)
+
+# Create plot
+p <- ggplot(deciles_df, aes(x = percentage, y = kappa_loss, color = factor(noise))) +
+  geom_point() +
+  geom_line(aes(group = factor(noise))) +
+  labs(x = "Instances", y = "Kappa", color = "Noise") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0.0, 1), breaks = seq(0, 1, by = 0.1)) +
+  facet_grid(method_order ~ dataset_order, scales = "free")
+
+# Print plot
+print(p)
+ggsave("../results/plots/KLC_plot_deciles.png", p, width = 40, height = 40, dpi = 600)
+```
+
+```{r include=FALSE}
+saveRDS(deciles_df, file = "../results/KLC_plot_deciles.rds")
+```
+
+#### Obtain the Kappa Loss (in quartiles)
+
+```{r include=FALSE}
+# Get Kappa loss in order to print Kappa Loss Curves
+# Calculate 1 - mean_kappa rounded to two decimals
+quartiles_df$kappa_loss <- round(1 - quartiles_df$kappa, 3)
+```
+
+```{r echo=FALSE}
+# Create a new column to control the order of datasets
+quartiles_df$dataset_order <- factor(quartiles_df$dataset_name, levels = datasets)
+
+# Create a new column to control the order of methods
+quartiles_df$method_order <- factor(quartiles_df$technique, levels = method_names)
+
+# Create plot
+p <- ggplot(quartiles_df, aes(x = percentage, y = kappa_loss, color = factor(noise))) +
+  geom_point() +
+  geom_line(aes(group = factor(noise))) +
+  labs(x = "Instances", y = "Kappa", color = "Noise") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0.0, 1), breaks = seq(0, 1, by = 0.1)) +
+  facet_grid(method_order ~ dataset_order, scales = "free")
+
+# Print plot
+print(p)
+ggsave("../results/plots/KLC_plot_quartiles.png", p, width = 40, height = 40, dpi = 600)
+```
+
+```{r include=FALSE}
+saveRDS(quartiles_df, file = "../results/KLC_plot_quartiles.rds")
+```
