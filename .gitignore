@@ -10,3 +10,4 @@
 data/datasets/*.rds
 data/files/*.rds
 data/prev/*.rds
+results/*.rds
