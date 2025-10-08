@@ -7,3 +7,6 @@
 
 # Big files
 *.rds
+data/datasets/*.rds
+data/files/*.rds
+data/prev/*.rds
