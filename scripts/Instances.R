@@ -85,7 +85,7 @@ get_instances <- function(instances_df, index_list, index_counter, percent) {
 
 # Calculate predictions and generate confusion matrix
 calculate_predictions <- function(fit, test_df, instances_df, noise) {
-  print("Calculate prediction")
+  cat("Calculate prediction\n")
   
   # Prediction without noise
   predict_unseen <- predict(fit, test_df)
@@ -94,7 +94,7 @@ calculate_predictions <- function(fit, test_df, instances_df, noise) {
   noise_predict <- predict(fit, instances_df)
   
   # Confusion matrix
-  print("Confusion matrix")
+  cat("Confusion matrix\n")
   if(noise == 0) {
     conf_matrix <- caret::confusionMatrix(predict_unseen, predict_unseen)
   } else {
@@ -113,11 +113,11 @@ calculate_predictions <- function(fit, test_df, instances_df, noise) {
 # Function to process instances with noise
 process_instances <- function(dataset, fold_index, method, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter) {
   # Print relevant information for the iteration
-  print(paste("Dataset:", dataset))
-  print(paste("Fold:", fold_index))
-  print(paste("Method:", method))
-  print(paste0("Noise level: ", noise * 100, "%"))
-  print(paste0("Percentage of altered instances: ", percent * 100, "%"))
+  cat("Dataset:", dataset, "\n")
+  cat("Fold:", fold_index, "\n")
+  cat("Method:", method, "\n")
+  cat("Noise level: ", noise * 100, "%\n")
+  cat("Percentage of altered instances: ", percent * 100, "%\n")
 
   # Create a new dataframe with the noise from noiseMIA_list
   noiselvl <- paste0("noise_", noise * 100)
@@ -148,7 +148,7 @@ process_instances <- function(dataset, fold_index, method, noise, percent, test_
   indices <- tail(index_list, n = 1)
   indices <- indices[[1]][1:sample_size]
   
-  print(paste0("Alter ", percent * 100, "% of instances with noise"))
+  cat("Alter ", percent * 100, "% of instances with noise\n")
   
   # Create auxiliary dataframe and manipulate rows efficiently with data.table
   aux_df <- noise_df[index %in% indices]
@@ -202,7 +202,7 @@ process_instances <- function(dataset, fold_index, method, noise, percent, test_
 # TODO
 
 # Load and extract parameters
-parameters <- load_parameters("data/files/parameters.csv")
+parameters <- load_parameters("../data/files/parameters.csv")
 datasets <- parameters$datasets
 fold_names <- parameters$fold_names
 methods <- parameters$methods
@@ -211,8 +211,8 @@ instances <- parameters$instances
 control <- parameters$control
 
 # Load previous most important attribute table and
-mia_df <- readRDS("results/most_important_attr/mia_df.rds")
-noiseMIA_list <- readRDS("results/noise/noise_list.rds")
+mia_df <- readRDS("../data/prev/mia_df.rds")
+noiseMIA_list <- readRDS("../data/prev/noise_list.rds")
 
 # Pre-allocate results dataframe with expected size (more efficient)
 total_rows <- length(datasets) * length(fold_names) * length(methods) * 
@@ -236,7 +236,7 @@ index_counter = 1
 for(dataset in datasets) {
   
   # Load dataset
-  filename = paste0("data/datasets/", dataset, ".rds")
+  filename = paste0("../data/datasets/", dataset, ".rds")
   df <- readRDS(filename)
 
   # Create fold indices (training and testing)
@@ -261,9 +261,11 @@ for(dataset in datasets) {
     
     # Create a frequency table for the class in the 'Training' dataset
     # Calculate the frequency table as a proportion of all values
-    print(paste("Dataset:", dataset))
-    print("Probability table:")
-    print(prop.table(table(train_df$class)))
+    cat("Dataset:", dataset, "\n")
+    cat("Probability table:\n")
+    # For tables, we need special handling to make them look nice in logs
+    prob_table <- prop.table(table(train_df$class))
+    cat(paste(capture.output(prob_table), collapse="\n"), "\n")
     
     # Create a list to store the noise lists per method
     method_list <- list()
@@ -274,11 +276,11 @@ for(dataset in datasets) {
     for(method in methods) {
 
         # Train to obtain model
-        print(paste("Dataset:", dataset))
-        print(paste("Method:", method))
-        print("BEGINNING TRAINING")
+        cat("Dataset:", dataset, "\n")
+        cat("Method:", method, "\n")
+        cat("BEGINNING TRAINING\n")
         fit <- train_model(method, train_df, control)
-        print("TRAINING SUCCESSFUL")
+        cat("TRAINING SUCCESSFUL\n")
         
         # Select the MIA we will get the noise from
         mia <- subset(mia_df, dataset_name == dataset & technique == method)$most_important_attribute
@@ -309,26 +311,24 @@ for(dataset in datasets) {
             # Add results to the data frame
             results_df <- rbind(results_df, result$result)
             
-            print("-")
+            cat("-\n")
           }
           
-          print("-")
+          cat("-\n")
         }
       }
     }
   }
   
   # Safeguard store by dataset
-  filename = paste0("results/instances/by_dataset/", dataset, "_results.csv")
+  filename = paste0("../results/instances/by_dataset/", dataset, "_results.csv")
   dataset_results <- subset(results_df, dataset == dataset)
   write.csv(dataset_results, file = filename, row.names = FALSE)
   
-  print("Altered instances with noise recorded")
-  print("----------------")
+  cat("Altered instances with noise recorded\n")
+  cat("----------------\n")
 }
 
-# Save the complete results
-write.csv(results_df, file = "results/instances/complete_results.csv", row.names = FALSE)
-print("****************")
-print("RESULTS RECORDED")
-print("****************")
+cat("****************\n")
+cat("RESULTS RECORDED\n")
+cat("****************\n")
