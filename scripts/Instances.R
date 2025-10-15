@@ -19,8 +19,8 @@ load_parameters <- function(params_file) {
     datasets = datasets,
     #datasets = unlist(strsplit(subset(params, parameter == "dataset_name")$values, "\\|")),
     fold_names = unlist(strsplit(subset(params, parameter == "fold_name")$values, "\\|")),
-    methods = unlist(strsplit(subset(params, parameter == "technique_name")$values, "\\|")),
-    noise_level = as.numeric(unlist(strsplit(subset(params, parameter == "noise_level")$values, "\\|"))),
+    models = unlist(strsplit(subset(params, parameter == "technique_name")$values, "\\|")),
+    noise_levels = as.numeric(unlist(strsplit(subset(params, parameter == "noise_level")$values, "\\|"))),
     instances = as.numeric(unlist(strsplit(subset(params, parameter == "instance_level")$values, "\\|"))),
     control = control
   )
@@ -28,6 +28,42 @@ load_parameters <- function(params_file) {
  
 # Model training function (instead of if-else block)
 train_model <- function(method, train_df, control) {
+  model_params <- list(
+    "C5.0" = list(method = "C5.0"),
+    "ctree" = list(method = "ctree"),
+    "fda" = list(method = "fda"),
+    "gbm" = list(method = "gbm"),
+    "gcvEarth" = list(method = "gcvEarth"),
+    "JRip" = list(method = "JRip"),
+    "lvq" = list(method = "lvq"),
+    "mlpML" = list(method = "mlpML"),
+    "multinom" = list(method = "multinom", trControl = control, 
+                     tuneGrid = expand.grid(decay = c(0)), MaxNWts = 10000),
+    "naive_bayes" = list(method = "naive_bayes"),
+    "PART" = list(method = "PART"),
+    "rbfDDA" = list(method = "rbfDDA", trControl = control),
+    "rda" = list(method = "rda"),
+    "rf" = list(method = "rf"),
+    "rpart" = list(method = "rpart"),
+    "simpls" = list(method = "simpls"),
+    "svmLinear" = list(method = "svmLinear"),
+    "svmRadial" = list(method = "svmRadial"),
+    "rfRules" = list(method = "rfRules"),
+    "knn" = list(method = "knn", tuneGrid = expand.grid(k = 5:5), 
+                preProcess = c("center", "scale"), trControl = control),
+    "bayesglm" = list(method = "bayesglm", trControl = control)
+  )
+  
+  params <- model_params[[method]]
+  if(is.null(params)) {
+    stop(paste("Unsupported method:", method))
+  }
+  
+  do.call(caret::train, c(list(class ~ ., data = train_df), params))
+}
+
+# Model training function with noise from thresholds
+train_model_noise <- function(method, train_df, control) {
   model_params <- list(
     "C5.0" = list(method = "C5.0"),
     "ctree" = list(method = "ctree"),
@@ -111,7 +147,7 @@ calculate_predictions <- function(fit, test_df, instances_df, noise) {
 }
 
 # Instances-Noise
-process_instances <- function(dataset, fold_index, method, mia, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter) {
+process_instance <- function(dataset, fold_index, method, mia, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter) {
   # Print relevant information for the iteration
   cat("Dataset:", dataset, "\n")
   cat("Fold:", fold_index, "\n")
@@ -126,7 +162,7 @@ process_instances <- function(dataset, fold_index, method, mia, noise, percent, 
   # Create a new df with the altered number of instances desired
   instances_df <- test_df
   
-  # Convert to data.table and add indices efficiently
+  # Convert to data.table and add indices 
   setDT(test_df)[, index := .I]
   setDT(noise_df)[, index := .I]
   setDT(instances_df)[, index := .I]
@@ -177,7 +213,7 @@ process_instances <- function(dataset, fold_index, method, mia, noise, percent, 
       dataset = dataset,
       fold = paste0("Fold_", fold_index),
       method = method,
-      noise_level = noise,
+      noise_levels = noise,
       instance_level = percent,
       accuracy = conf_matrix$overall["Accuracy"],
       kappa = conf_matrix$overall["Kappa"],
@@ -189,64 +225,70 @@ process_instances <- function(dataset, fold_index, method, mia, noise, percent, 
   )
 }
 
-# Methods
-process_method <- function(dataset, fold_index, train_df, test_df, method, mia_df, noise_level, instances, noiseMIA_list, index_list, index_counter, control) {
+# Models
+process_model <- function(dataset, fold_index, train_df, test_df, method, mia_df, noise_levels, instances, noiseMIA_list, index_list, index_counter, control) {
+
   # Train model
-  fit <- train_model(method, train_df, control)
+  #fit <- train_model(method, train_df, control)
+  fit <- train_model_noise(method, train_df, control)
+
   # Get MIA
   mia <- subset(mia_df, dataset_name == dataset & technique == method)$most_important_attribute
+
   # Control variable for sampling
   semaphore <- TRUE
-  # Store results using lapply over all combinations of noise_level and instances
-  grid <- expand.grid(noise = noise_level, percent = instances, stringsAsFactors = FALSE)
-  method_results <- apply(grid, 1, function(row) {
-    noise <- as.numeric(row["noise"])
-    percent <- as.numeric(row["percent"])
-    noiselvl <- paste0("noise_", noise * 100)
-    noise_df <- noiseMIA_list[[dataset]][[mia]][[noiselvl]]
-    result <- process_instances(dataset, fold_index, method, mia, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter)
-    # Update stateful variables for next iteration
-    index_list <<- result$index_list
-    index_counter <<- result$index_counter
-    semaphore <<- result$semaphore
-    result$result
-  })
+
+  # Store results of all combinations of noise level and instance
+  method_results <- list()
+  for (noise in noise_levels) {
+    for (percent in instances) {
+      noiselvl <- paste0("noise_", noise * 100)
+      noise_df <- noiseMIA_list[[dataset]][[mia]][[noiselvl]]
+      result <- process_instance(dataset, fold_index, method, mia, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter)
+      index_list <- result$index_list
+      index_counter <- result$index_counter
+      semaphore <- result$semaphore
+      method_results <- append(method_results, list(result$result))
+    }
+  }
   do.call(rbind, method_results)
 }
 
 # Folds
-process_fold <- function(dataset, fold_index, df, methods, mia_df, noise_level, instances, noiseMIA_list, index_list, index_counter, control) {
+process_fold <- function(dataset, fold_index, train_indices, test_indices, df, models, mia_df, noise_levels, instances, noiseMIA_list, index_list, index_counter, control) {
+
+  # Print probability table for the fold
+  #cat("Dataset:", dataset, "\n")
+  #cat("Probability table:\n")
+  #prob_table <- prop.table(table(train_df$class))
+  #cat(paste(capture.output(prob_table), collapse="\n"), "\n")
+
   # Get train and test indices for this fold
-  fold_train_indices <- createFolds(df$class, k = 5, list = TRUE, returnTrain = TRUE)
-  fold_test_indices <- lapply(fold_train_indices, function(index) setdiff(1:nrow(df), index))
-  train_indices <- fold_train_indices[[fold_index]]
-  test_indices <- fold_test_indices[[fold_index]]
   train_df <- df[train_indices, ]
   test_df <- df[test_indices, ]
-  # Print probability table for the fold
-  cat("Dataset:", dataset, "\n")
-  cat("Probability table:\n")
-  prob_table <- prop.table(table(train_df$class))
-  cat(paste(capture.output(prob_table), collapse="\n"), "\n")
-  # Store results for all methods in this fold using lapply
-  fold_results <- do.call(rbind, lapply(methods, function(method) {
-    process_method(dataset, fold_index, train_df, test_df, method, mia_df, noise_level, instances, noiseMIA_list, index_list, index_counter, control)
+
+  # Call function to iterate models
+  fold_results <- do.call(rbind, lapply(models, function(method) {
+    process_model(dataset, fold_index, train_df, test_df, method, mia_df, noise_levels, instances, noiseMIA_list, index_list, index_counter, control)
   }))
   fold_results
 }
 
 # Load and extract parameters
-parameters <- load_parameters("../data/files/parameters.csv")
+parameters <- load_parameters("data/files/parameters.csv")
 datasets <- parameters$datasets
 fold_names <- parameters$fold_names
-methods <- parameters$methods
-noise_level <- parameters$noise_level
+models <- parameters$models 
+noise_levels <- parameters$noise_levels 
 instances <- parameters$instances
 control <- parameters$control
 
+# Set number of folds
+n_folds <- 5
+
 # Load previous most important attribute table and
-mia_df <- readRDS("../data/prev/mia_df.rds")
-noiseMIA_list <- readRDS("../data/prev/noise_list.rds")
+mia_df <- readRDS("data/prev/mia_df.rds") # TODO store as csv
+noiseMIA_list <- readRDS("data/prev/noise_list.rds") #TODO flatten list and store as csv
 
 # Initialize empty results dataframe
 results_df <- data.frame(
@@ -260,25 +302,36 @@ results_df <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Apply process_fold to each dataset using lapply
+# Control variables before iterations
+index_list <- list()
+index_counter <- 1
+
+# Iterate datasets
 results_list <- lapply(datasets, function(dataset) {
-  filename <- paste0("../data/datasets/", dataset, ".rds")
+  filename <- paste0("data/datasets/", dataset, ".rds")
   df <- readRDS(filename)
-  n_folds <- 5
-  dataset_results <- do.call(rbind, lapply(1:n_folds, function(i) {
-    process_fold(dataset, i, df, methods, mia_df, noise_level, instances, noiseMIA_list, index_list, index_counter, control)
+
+  # Get train and test indices for this dataset
+  # Partition data into train/test with cross validation folds
+  fold_train_indices <- createFolds(df$class, k = 5, list = TRUE, returnTrain = TRUE)
+  fold_test_indices <- lapply(fold_train_indices, function(index) setdiff(1:nrow(df), index))
+
+  # Call functions (iterate folds)
+  dataset_results <- do.call(rbind, lapply(1:n_folds, function(fold_i) {
+    process_fold(dataset, fold_i, fold_train_indices[[fold_i]], fold_test_indices[[fold_i]], df, models, mia_df, noise_levels, instances, noiseMIA_list, index_list, index_counter, control)
   }))
+
   # Safeguard store by dataset
-  out_filename <- paste0("../results/instances/by_dataset/", dataset, "_results.csv")
+  out_filename <- paste0("results/instances/by_dataset/", dataset, "_results.csv")
   write.csv(dataset_results, file = out_filename, row.names = FALSE)
   cat("Altered instances with noise recorded\n")
   cat("----------------\n")
   dataset_results
 })
 # Combine all results into a single data frame
-results_df <- do.call(rbind, results_list)
-out_filename <- paste0("../results/altered_instances_results.csv")
-write.csv(results_df, file = out_filename, row.names = FALSE)
+#results_df <- do.call(rbind, results_list)
+#out_filename <- paste0("results/altered_instances_results.csv")
+#write.csv(results_df, file = out_filename, row.names = FALSE)
 
 cat("****************\n")
 cat("RESULTS RECORDED\n")
