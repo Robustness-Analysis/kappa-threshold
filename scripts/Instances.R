@@ -63,7 +63,7 @@ train_model <- function(method, train_df, control) {
 }
 
 # Model training function with noise from thresholds
-train_model_noise <- function(method, train_df, control) {
+train_model_noise <- function(method, train_df, control, dataset_name, mia_df, noiseMIA_list) {
   model_params <- list(
     "C5.0" = list(method = "C5.0"),
     "ctree" = list(method = "ctree"),
@@ -89,13 +89,62 @@ train_model_noise <- function(method, train_df, control) {
                 preProcess = c("center", "scale"), trControl = control),
     "bayesglm" = list(method = "bayesglm", trControl = control)
   )
-  
+
   params <- model_params[[method]]
   if(is.null(params)) {
     stop(paste("Unsupported method:", method))
   }
-  
-  do.call(caret::train, c(list(class ~ ., data = train_df), params))
+
+  # Lookup threshold values for this dataset and method
+  row <- thresholds_df[thresholds_df$dataset_name == dataset_name & thresholds_df$technique == method, ]
+  if(nrow(row) == 0) {
+    stop(paste("No threshold found for dataset:", dataset_name, "and method:", method))
+  }
+  noise_level <- as.numeric(row$noise_level[1])
+  critical_percentage <- as.numeric(row$critical_percentage[1])
+
+  # Get most important attribute for this dataset and method
+  mia_row <- subset(mia_df, dataset_name == dataset_name & technique == method)
+  if(nrow(mia_row) == 0) {
+    stop(paste("No MIA found for dataset:", dataset_name, "and method:", method))
+  }
+  mia <- as.character(mia_row$most_important_attribute[1])
+
+  # Apply noise to the training data according to the thresholds
+  train_df_noisy <- train_df
+  if(noise_level > 0 && critical_percentage > 0) {
+    noiselvl <- paste0("noise_", as.integer(noise_level))
+    # Get the noise data for the training set
+    noise_df <- noiseMIA_list[[dataset_name]][[mia]][[noiselvl]]
+    # Add index columns for sampling
+    train_df_noisy <- as.data.table(train_df_noisy)
+    noise_df <- as.data.table(noise_df)
+    train_df_noisy[, index := .I]
+    noise_df[, index := .I]
+    # Number of instances to alter
+    sample_size <- round(nrow(train_df_noisy) * (critical_percentage / 100), 0)
+    if(sample_size > 0) {
+      indices <- sample(train_df_noisy$index, sample_size)
+      # Replace selected rows with noisy rows
+      aux_df <- noise_df[index %in% indices]
+      if (nrow(aux_df) == 0) {
+        train_df_noisy[, index := NULL]
+      } else {
+        # Ensure aux_df has the same columns as train_df_noisy
+        aux_df <- aux_df[, names(train_df_noisy), with=FALSE]
+        train_df_noisy <- rbindlist(list(
+          train_df_noisy[!index %in% indices],
+          aux_df
+        ))
+        setorder(train_df_noisy, index)
+        train_df_noisy[, index := NULL]
+      }
+    } else {
+      train_df_noisy[, index := NULL]
+    }
+  }
+
+  do.call(caret::train, c(list(class ~ ., data = train_df_noisy), params))
 }
 
 # Obtain vector of altered instances
@@ -226,30 +275,34 @@ process_instance <- function(dataset, fold_index, method, mia, noise, percent, t
 }
 
 # Models
-process_model <- function(dataset, fold_index, train_df, test_df, method, mia_df, noise_levels, instances, noiseMIA_list, index_list, index_counter, control) {
 
-  # Train model
-  #fit <- train_model(method, train_df, control)
-  fit <- train_model_noise(method, train_df, control)
+process_model <- function(dataset, fold_index, train_df, test_df, method, mia_df, noise_levels, instances, noiseMIA_list, index_list, index_counter, control) {
+  # Only use noise/instance levels present in threshold_instance_results.csv for this dataset/method
+  rows <- thresholds_df[thresholds_df$dataset_name == dataset & thresholds_df$technique == method, ]
+  if (nrow(rows) == 0) {
+    stop(paste("No threshold rows for dataset:", dataset, "and method:", method))
+  }
+  # Train model with noise thresholds (first row, as before)
+  fit <- train_model_noise(method, train_df, control, dataset, mia_df, noiseMIA_list)
 
   # Get MIA
-  mia <- subset(mia_df, dataset_name == dataset & technique == method)$most_important_attribute
+  mia <- as.character(subset(mia_df, dataset_name == dataset & technique == method)$most_important_attribute[1])
 
   # Control variable for sampling
   semaphore <- TRUE
 
-  # Store results of all combinations of noise level and instance
+  # Store results only for the noise/instance levels in the CSV
   method_results <- list()
-  for (noise in noise_levels) {
-    for (percent in instances) {
-      noiselvl <- paste0("noise_", noise * 100)
-      noise_df <- noiseMIA_list[[dataset]][[mia]][[noiselvl]]
-      result <- process_instance(dataset, fold_index, method, mia, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter)
-      index_list <- result$index_list
-      index_counter <- result$index_counter
-      semaphore <- result$semaphore
-      method_results <- append(method_results, list(result$result))
-    }
+  for (i in seq_len(nrow(rows))) {
+    noise <- as.numeric(rows$noise_level[i]) / 100
+    percent <- as.numeric(rows$critical_percentage[i]) / 100
+    noiselvl <- paste0("noise_", as.integer(noise * 100))
+    noise_df <- noiseMIA_list[[dataset]][[mia]][[noiselvl]]
+    result <- process_instance(dataset, fold_index, method, mia, noise, percent, test_df, noise_df, fit, index_list, semaphore, index_counter)
+    index_list <- result$index_list
+    index_counter <- result$index_counter
+    semaphore <- result$semaphore
+    method_results <- append(method_results, list(result$result))
   }
   do.call(rbind, method_results)
 }
@@ -290,6 +343,9 @@ n_folds <- 5
 mia_df <- readRDS("data/prev/mia_df.rds") # TODO store as csv
 noiseMIA_list <- readRDS("data/prev/noise_list.rds") #TODO flatten list and store as csv
 
+# Read threshold_instance_results.csv once at the top
+thresholds_df <- read.csv("results/threshold_instance_results.csv", stringsAsFactors = FALSE)
+
 # Initialize empty results dataframe
 results_df <- data.frame(
   dataset = character(),
@@ -322,7 +378,7 @@ results_list <- lapply(datasets, function(dataset) {
   }))
 
   # Safeguard store by dataset
-  out_filename <- paste0("results/instances/by_dataset/", dataset, "_results.csv")
+  out_filename <- paste0("results/instances/with_noise/", dataset, "_results.csv")
   write.csv(dataset_results, file = out_filename, row.names = FALSE)
   cat("Altered instances with noise recorded\n")
   cat("----------------\n")
